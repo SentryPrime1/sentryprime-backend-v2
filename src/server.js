@@ -447,6 +447,14 @@ You are an accessibility expert. Based on axe-core violations, produce:
     return res.status(500).json({ error: 'ai_error', detail: String(err?.message || err) });
   }
 });
+// TEMP DEBUG — list scans in memory for the current user
+app.get('/debug/scans', authenticateToken, (req, res) => {
+  const list = [...scans.values()].filter(s => s.userId === req.userId);
+  res.json({
+    count: list.length,
+    scanIds: list.map(s => ({ id: s.id, url: s.url, status: s.status, date: s.scan_date })),
+  });
+});
 
 // --- Health Check ---
 app.get('/', (req, res) => {
