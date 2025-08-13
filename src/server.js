@@ -52,7 +52,6 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'invalid_token' });
   }
 }
-}
 
 // === Helpers ===
 const getFromStore = (collection, key) => {
@@ -86,8 +85,6 @@ const flattenViolationsFromScan = (scan) => {
 
   return [];
 };
-
-// --- Authentication Endpoints ---
 
 // --- Authentication Endpoints ---
 app.post('/api/auth/register', async (req, res) => {
@@ -330,124 +327,124 @@ app.route('/api/dashboard/scans')
     }
   });
 
-// --- AI Analysis Endpoint ---
-app.post('/api/ai/analyze', authenticateToken, async (req, res) => {
-  if (!openai) {
-    return res.status(501).json({ 
-      error: 'ai_disabled', 
-      message: 'OpenAI API key not configured. Set OPENAI_API_KEY environment variable.' 
-    });
-  }
-  
-  const { scan_id } = req.body || {};
-  
-  if (!scan_id) {
-    return res.status(400).json({ error: 'scan_id_required' });
-  }
-  
-  // Verify scan belongs to user
-  const scan = scans.get(scan_id);
-  if (!scan || scan.userId !== req.userId) {
+// Individual scan summary (no heavy payload), auth required
+app.get('/api/scans/:scanId', authenticateToken, (req, res) => {
+  const { scanId } = req.params;
+  const scan = getFromStore(scans, scanId);
+
+  if (!scan || (scan.userId && scan.userId !== req.userId)) {
     return res.status(404).json({ error: 'scan_not_found' });
   }
-  
-  const pages = scan.details?.pages || [];
-  if (!pages.length) {
-    return res.status(400).json({ error: 'no_scan_data_available' });
+
+  return res.json({
+    id: scan.id || scanId,
+    url: scan.url || scan.targetUrl || scan.pageUrl,
+    userId: scan.userId,
+    scan_date: scan.scan_date || scan.createdAt || scan.timestamp,
+    totals: {
+      violations: flattenViolationsFromScan(scan).length,
+    },
+  });
+});
+
+// Full results for a scan (normalized), auth required
+app.get('/api/scans/:scanId/results', authenticateToken, (req, res) => {
+  const { scanId } = req.params;
+  const scan = getFromStore(scans, scanId);
+
+  if (!scan || (scan.userId && scan.userId !== req.userId)) {
+    return res.status(404).json({ error: 'scan_not_found' });
   }
-  
+
+  const violations = flattenViolationsFromScan(scan);
+
+  return res.json({
+    id: scan.id || scanId,
+    url: scan.url || scan.targetUrl || scan.pageUrl,
+    scan_date: scan.scan_date || scan.createdAt || scan.timestamp,
+    violations,
+  });
+});
+
+// --- Enhanced AI Analysis Endpoint ---
+app.post('/api/ai/analyze', authenticateToken, async (req, res) => {
   try {
-    // Aggregate violations by rule
-    const ruleMap = new Map();
-    
-    for (const page of pages) {
-      for (const violation of page.violations || []) {
-        const ruleId = violation.id;
-        const existing = ruleMap.get(ruleId) || {
-          id: violation.id,
-          help: violation.help,
-          helpUrl: violation.helpUrl,
-          description: violation.description,
-          impactCounts: { critical: 0, serious: 0, moderate: 0, minor: 0, unknown: 0 },
-          totalCount: 0,
-          examples: []
-        };
-        
-        const nodeCount = violation.nodes?.length || 1;
-        existing.totalCount += nodeCount;
-        
-        const impact = (violation.impact || 'unknown').toLowerCase();
-        existing.impactCounts[impact] = (existing.impactCounts[impact] || 0) + nodeCount;
-        
-        // Add examples (limit to 3 per rule)
-        for (const node of violation.nodes || []) {
-          if (existing.examples.length >= 3) break;
-          existing.examples.push({
-            target: node.target,
-            failureSummary: node.failureSummary,
-            htmlSnippet: node.html
-          });
-        }
-        
-        ruleMap.set(ruleId, existing);
-      }
+    const { scan_id, scanId, url } = req.body || {};
+    const id = scan_id || scanId;
+
+    let scan = id ? getFromStore(scans, id) : null;
+
+    // Optional fallback: if no scanId provided or not found, try the most recent scan for this user (and same URL if provided)
+    if (!scan) {
+      let userScans = toArray(scans).filter(s => !s.userId || s.userId === req.userId);
+      if (url) userScans = userScans.filter(s => (s.url || s.targetUrl || s.pageUrl) === url);
+      userScans.sort((a, b) => new Date(b.scan_date || b.createdAt || b.timestamp || 0) - new Date(a.scan_date || a.createdAt || a.timestamp || 0));
+      scan = userScans[0] || null;
     }
-    
-    // Get top 10 most frequent violations
-    const topViolations = [...ruleMap.values()]
-      .sort((a, b) => b.totalCount - a.totalCount)
-      .slice(0, 10);
-    
-    const analysisData = {
-      siteUrl: scan.url,
-      totalViolations: scan.total_violations,
-      complianceScore: scan.compliance_score,
-      riskLevel: scan.risk_level,
-      pagesScanned: scan.pages_scanned,
-      topViolations
+
+    if (!scan) {
+      return res.status(404).json({ error: 'scan_not_found' });
+    }
+
+    if (!openai) {
+      return res.status(501).json({ 
+        error: 'ai_disabled', 
+        message: 'OpenAI API key not configured. Set OPENAI_API_KEY environment variable.' 
+      });
+    }
+
+    const violations = flattenViolationsFromScan(scan);
+
+    // Build a compact prompt with a capped sample if huge
+    const maxExamples = 50;
+    const sample = violations.slice(0, maxExamples).map(v => ({
+      id: v.id,
+      impact: v.impact,
+      help: v.help,
+      description: v.description,
+      helpUrl: v.helpUrl,
+      nodes: (v.nodes || []).slice(0, 3).map(n => ({
+        target: n.target,
+        failureSummary: n.failureSummary
+      }))
+    }));
+
+    const sys = `
+You are an accessibility expert. Based on axe-core violations, produce:
+1) A concise summary for non-technical stakeholders.
+2) A prioritized list of fixes (group by issue type, highest impact first).
+3) For each group, give step-by-step, code-aware remediation guidance (HTML/ARIA/CSS/JS), with short examples.
+4) Keep it actionable and concrete.
+`;
+
+    const userMsg = {
+      url: scan.url || scan.targetUrl || scan.pageUrl,
+      total_violations: violations.length,
+      sample_violations: sample
     };
-    
-    // Enhanced AI prompt for better recommendations
-    const systemPrompt = `You are an expert web accessibility consultant. Analyze the provided axe-core scan results and create a comprehensive, actionable fix guide.
 
-For each violation rule:
-1. Explain what the issue means in plain English
-2. Explain why it matters for users with disabilities
-3. Provide specific, step-by-step instructions to fix it
-4. Include before/after code examples when relevant
-5. Reference WCAG guidelines when applicable
-
-Keep explanations clear and actionable for developers of all skill levels.`;
-
-    const userPrompt = `Please analyze these accessibility scan results and provide detailed fix recommendations:
-
-${JSON.stringify(analysisData, null, 2)}
-
-Format your response in clear Markdown with sections for each violation type.`;
-
-    console.log(`Generating AI analysis for scan ${scan_id}`);
-    
     const completion = await openai.chat.completions.create({
       model: OPENAI_MODEL,
-      temperature: 0.3,
+      temperature: 0.2,
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
+        { role: 'system', content: sys },
+        { role: 'user', content: `Here are axe-core results:\n${JSON.stringify(userMsg, null, 2)}` }
       ]
     });
-    
-    const analysis = completion.choices?.[0]?.message?.content || 'No analysis generated.';
-    
-    console.log(`AI analysis completed for scan ${scan_id}`);
-    
-    return res.json({ analysis });
-    
-  } catch (error) {
-    console.error('AI analysis failed:', error);
-    return res.status(500).json({ 
-      error: 'ai_analysis_failed', 
-      details: error.message 
+
+    const text = completion.choices?.[0]?.message?.content?.trim() || 'No analysis generated.';
+
+    // Lightweight structured response with a plain-text summary
+    return res.json({
+      scan_id: scan.id || id,
+      url: userMsg.url,
+      total_violations: violations.length,
+      summary: text,
+      prioritized_fixes: [], // (optional) keep as array if you later add structured parsing
     });
+  } catch (err) {
+    console.error('AI analyze error:', err);
+    return res.status(500).json({ error: 'ai_error', detail: String(err?.message || err) });
   }
 });
 
