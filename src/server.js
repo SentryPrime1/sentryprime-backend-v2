@@ -52,6 +52,42 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'invalid_token' });
   }
 }
+}
+
+// === Helpers ===
+const getFromStore = (collection, key) => {
+  // Supports Map or plain object
+  if (!collection) return undefined;
+  return collection instanceof Map ? collection.get(key) : collection[key];
+};
+
+const toArray = (collection) => {
+  if (!collection) return [];
+  return collection instanceof Map ? Array.from(collection.values()) : Object.values(collection);
+};
+
+const flattenViolationsFromScan = (scan) => {
+  // Normalize to a single array of violations
+  if (!scan) return [];
+
+  if (Array.isArray(scan.violations)) return scan.violations;
+
+  if (scan?.results?.violations && Array.isArray(scan.results.violations)) {
+    return scan.results.violations;
+  }
+
+  if (scan?.details?.pages && Array.isArray(scan.details.pages)) {
+    const all = [];
+    for (const p of scan.details.pages) {
+      if (Array.isArray(p.violations)) all.push(...p.violations);
+    }
+    return all;
+  }
+
+  return [];
+};
+
+// --- Authentication Endpoints ---
 
 // --- Authentication Endpoints ---
 app.post('/api/auth/register', async (req, res) => {
