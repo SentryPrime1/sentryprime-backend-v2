@@ -268,6 +268,28 @@ app.route('/api/dashboard/scans')
     }
     
     try {
+      // Create scan record FIRST with running status
+      const scanId = uuid();
+      console.log('[scan:start]', scanId, url, 'user=', req.userId); // ✅ LOGGING ADDED
+      
+      const scan = {
+        id: scanId,
+        userId: req.userId,
+        website_id,
+        website_name: website.name,
+        url,
+        scan_date: new Date().toISOString(),
+        status: 'running',
+        total_violations: 0,
+        compliance_score: null,
+        risk_level: 'Unknown',
+        pages_scanned: 0,
+        details: null
+      };
+      
+      // Store scan immediately
+      scans.set(scanId, scan);
+      
       console.log(`Starting scan for user ${req.userId}, website ${website_id}: ${url}`);
       
       // Run the actual accessibility scan
@@ -290,23 +312,17 @@ app.route('/api/dashboard/scans')
         }))
       }));
       
-      // Create scan record
-      const scanId = uuid();
-      const scan = {
-        id: scanId,
-        userId: req.userId,
-        website_id,
-        website_name: website.name,
-        url,
-        scan_date: scanResult.scannedAt,
-        total_violations: scanResult.totalViolations,
-        compliance_score: scanResult.complianceScore,
-        risk_level: scanResult.complianceScore < 70 ? 'High' : 
-                   scanResult.complianceScore < 90 ? 'Moderate' : 'Low',
-        pages_scanned: scanResult.totalPages,
-        details: { pages: processedPages }
-      };
+      // Update the SAME scan object
+      scan.scan_date = scanResult.scannedAt;
+      scan.total_violations = scanResult.totalViolations;
+      scan.compliance_score = scanResult.complianceScore;
+      scan.risk_level = scanResult.complianceScore < 70 ? 'High' : 
+                       scanResult.complianceScore < 90 ? 'Moderate' : 'Low';
+      scan.pages_scanned = scanResult.totalPages;
+      scan.details = { pages: processedPages };
+      scan.status = 'done';
       
+      // Update scan in storage (same ID)
       scans.set(scanId, scan);
       
       // Update website summary
@@ -314,6 +330,7 @@ app.route('/api/dashboard/scans')
       website.total_violations = scan.total_violations;
       website.last_scan_date = scan.scan_date;
       
+      console.log('[scan:finish]', scan.id, 'violations=', scan.total_violations, 'status=', scan.status); // ✅ LOGGING ADDED
       console.log(`Scan completed: ${scan.total_violations} violations, ${scan.compliance_score}% compliance`);
       
       return res.status(201).json(scan);
@@ -447,6 +464,7 @@ You are an accessibility expert. Based on axe-core violations, produce:
     return res.status(500).json({ error: 'ai_error', detail: String(err?.message || err) });
   }
 });
+
 // TEMP DEBUG — list scans in memory for the current user
 app.get('/debug/scans', authenticateToken, (req, res) => {
   const list = [...scans.values()].filter(s => s.userId === req.userId);
