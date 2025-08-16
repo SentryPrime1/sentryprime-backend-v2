@@ -4,17 +4,10 @@ const require = createRequire(import.meta.url);
 const axe = require('axe-core');
 
 /**
- * PRODUCTION-READY ACCESSIBILITY SCANNER
+ * PRODUCTION-READY ACCESSIBILITY SCANNER - FIXED VERSION
  * 
- * This version incorporates all critical fixes identified in the analysis:
- * 1. ✅ Module compatibility (ESM + CJS bridge)
- * 2. ✅ Improved contrast deduplication with target normalization
- * 3. ✅ Complete iframe scanning (violations + incomplete as alerts)
- * 4. ✅ Proper fetch timeout with AbortController
- * 5. ✅ Railway deployment compatibility
- * 6. ✅ Normalized result shape for backend/UI compatibility
- * 
- * Expected: 50-80+ violations matching WAVE results
+ * This version removes the duplicate export that was causing the syntax error.
+ * All other functionality remains the same.
  */
 export async function crawlAndScan(startUrl, opts = {}) {
   const maxPages = Math.min(Math.max(opts.maxPages ?? 50, 1), 200);
@@ -669,12 +662,4 @@ async function discoverPageLinks(page, currentUrl, origin) {
     console.error(`Error discovering links from ${currentUrl}:`, e.message);
     return [];
   }
-}
-
-// CommonJS compatibility bridge (as suggested in analysis)
-export { crawlAndScan };
-
-// eslint-disable-next-line no-undef
-if (typeof module !== 'undefined') {
-  module.exports = { crawlAndScan };
 }
