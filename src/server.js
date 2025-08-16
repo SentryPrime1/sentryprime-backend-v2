@@ -1,5 +1,3 @@
-// STEP 1: Replace your entire server.js with this updated version
-
 import express from 'express';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
@@ -127,7 +125,7 @@ app.get('/api/dashboard/websites', authenticateToken, (req, res) => {
     id: website.id,
     name: website.name,
     url: website.url,
-    last_scan_id: website.last_scan_id || null,  // ← CRITICAL: Include scan ID
+    last_scan_id: website.last_scan_id || null,
     last_scan_date: website.last_scan_date || null,
     compliance_score: website.compliance_score || 0,
     total_violations: website.total_violations || 0
@@ -164,17 +162,20 @@ app.post('/api/dashboard/websites', authenticateToken, (req, res) => {
     last_scan_date: null,
     compliance_score: 0,
     total_violations: 0,
-    last_scan_id: null  // ← Initialize with null
+    last_scan_id: null
   };
   
   websites.set(websiteId, website);
   return res.status(201).json(website);
 });
 
-// ✅ FIXED: Scan management with proper status and website updates
+// ✅ FIXED: Scan management with proper filtering and sorting
 app.route('/api/dashboard/scans')
   .get(authenticateToken, (req, res) => {
-    const userScans = [...scans.values()].filter(s => s.userId === req.userId);
+    const userScans = [...scans.values()]
+      .filter(s => s.userId === req.userId)
+      .filter(s => s.status === 'done')  // ← ONLY SHOW COMPLETED SCANS
+      .sort((a, b) => new Date(b.scan_date) - new Date(a.scan_date));  // ← NEWEST FIRST
     
     const scanSummaries = userScans.map(scan => ({
       id: scan.id,
@@ -186,9 +187,10 @@ app.route('/api/dashboard/scans')
       compliance_score: scan.compliance_score,
       risk_level: scan.risk_level,
       pages_scanned: scan.pages_scanned,
-      status: scan.status || 'done'  // ← Include status
+      status: scan.status
     }));
     
+    console.log(`Returning ${scanSummaries.length} completed scans for user ${req.userId}`);
     return res.json({ scans: scanSummaries });
   })
   .post(authenticateToken, async (req, res) => {
@@ -214,7 +216,7 @@ app.route('/api/dashboard/scans')
         website_id,
         website_name: website.name,
         url,
-        status: 'running',  // ← START WITH RUNNING
+        status: 'running',
         scan_date: new Date().toISOString(),
         total_violations: 0,
         compliance_score: 0,
@@ -225,7 +227,7 @@ app.route('/api/dashboard/scans')
       
       scans.set(scanId, scan);
       
-      // ✅ FIX: Run scan asynchronously and update when done
+      // ✅ FIX: Run scan asynchronously with consistent violation counting
       (async () => {
         try {
           const scanResult = await crawlAndScan(url, { maxPages: 50 });
@@ -246,33 +248,38 @@ app.route('/api/dashboard/scans')
             }))
           }));
           
-          // ✅ FIX: Update scan with completion data
-          scan.status = 'done';  // ← SET TO DONE
+          // ✅ FIX: Count total violations consistently
+          const totalViolationCount = processedPages.reduce((total, page) => {
+            return total + (page.violations ? page.violations.length : 0);
+          }, 0);
+          
+          // ✅ FIX: Update scan with consistent violation count
+          scan.status = 'done';
           scan.scan_date = scanResult.scannedAt || scan.scan_date;
-          scan.total_violations = scanResult.totalViolations || 0;
+          scan.total_violations = totalViolationCount;  // ← USE CONSISTENT COUNT
           scan.compliance_score = scanResult.complianceScore || 0;
           scan.risk_level = scan.compliance_score < 70 ? 'High' : 
                            scan.compliance_score < 90 ? 'Moderate' : 'Low';
-          scan.pages_scanned = scanResult.totalPages || 0;
+          scan.pages_scanned = scanResult.totalPages || processedPages.length;
           scan.details = { pages: processedPages };
           
           scans.set(scanId, scan);
           
-          // ✅ CRITICAL: Update website with scan ID and summary
+          // ✅ CRITICAL: Update website with consistent data
           const websiteToUpdate = websites.get(website_id);
           if (websiteToUpdate) {
-            websiteToUpdate.last_scan_id = scanId;  // ← STORE SCAN ID
+            websiteToUpdate.last_scan_id = scanId;
             websiteToUpdate.last_scan_date = scan.scan_date;
-            websiteToUpdate.total_violations = scan.total_violations;
+            websiteToUpdate.total_violations = totalViolationCount;  // ← SAME COUNT
             websiteToUpdate.compliance_score = scan.compliance_score;
             websites.set(website_id, websiteToUpdate);
           }
           
-          console.log(`Scan completed: ${scan.total_violations} violations, ${scan.compliance_score}% compliance, scan ID: ${scanId}`);
+          console.log(`Scan completed: ${totalViolationCount} violations, ${scan.compliance_score}% compliance, scan ID: ${scanId}`);
           
         } catch (error) {
           console.error('Scan failed:', error);
-          scan.status = 'error';  // ← SET TO ERROR ON FAILURE
+          scan.status = 'error';
           scans.set(scanId, scan);
         }
       })();
@@ -304,13 +311,13 @@ app.get('/api/scans/:scanId', authenticateToken, (req, res) => {
     scan_date: scan.scan_date || null,
     total_violations: scan.total_violations ?? 0,
     compliance_score: scan.compliance_score ?? 0,
-    status: scan.status || 'running'  // ← USE ACTUAL STATUS
+    status: scan.status || 'running'
   };
   
   return res.json(scanMeta);
 });
 
-// ✅ NEW: Scan results endpoint that frontend expects
+// ✅ FIXED: Scan results endpoint with consistent counting and debugging
 app.get('/api/scans/:scanId/results', authenticateToken, (req, res) => {
   const { scanId } = req.params;
   const scan = scans.get(scanId);
@@ -319,7 +326,6 @@ app.get('/api/scans/:scanId/results', authenticateToken, (req, res) => {
     return res.status(404).json({ error: 'scan_not_found' });
   }
 
-  // ✅ RECOMMENDED: Protect against early access
   if (scan.status !== 'done') {
     return res.status(202).json({ 
       status: scan.status, 
@@ -337,7 +343,7 @@ app.get('/api/scans/:scanId/results', authenticateToken, (req, res) => {
     violations: [],
   };
 
-  // ✅ CRITICAL: Aggregate violations from all pages
+  // ✅ FIX: Aggregate violations with consistent counting
   if (scan.details && Array.isArray(scan.details.pages)) {
     for (const page of scan.details.pages) {
       const pageUrl = page.url;
@@ -361,7 +367,13 @@ app.get('/api/scans/:scanId/results', authenticateToken, (req, res) => {
     }
   }
 
-  console.log(`Returning ${result.violations.length} violations for scan ${scanId}`);
+  console.log(`Scan ${scanId}: stored ${scan.total_violations} violations, returning ${result.violations.length} detailed violations`);
+  
+  // ✅ ENSURE COUNTS MATCH
+  if (scan.total_violations !== result.violations.length) {
+    console.warn(`⚠️  Violation count mismatch for scan ${scanId}: stored=${scan.total_violations}, detailed=${result.violations.length}`);
+  }
+  
   return res.json(result);
 });
 
