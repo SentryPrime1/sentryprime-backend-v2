@@ -5,8 +5,8 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuid } from 'uuid';
 import OpenAI from 'openai';
 import { crawlAndScan } from './scanner.js';
-// ✅ NEW: Database imports
-import { initializeDatabase, closeDatabase } from '../database_models.js';
+// ✅ FIXED: Import database functions properly
+import { initializeDatabase, closeDatabase, createDatabaseModels } from '../database_models.js';
 import { runMigration } from '../database_migration.js';
 
 const app = express();
@@ -21,16 +21,22 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 // ✅ FIX: Proper OpenAI client initialization
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
-// ✅ NEW: Initialize database on startup
+// ✅ FIXED: Database initialization with proper error handling
 let dbInitialized = false;
+let db = null;
+
 const initDB = async () => {
   try {
+    console.log('🔄 Initializing database connection...');
     await initializeDatabase();
+    db = createDatabaseModels();
     dbInitialized = true;
     console.log('✅ Database initialized successfully');
   } catch (error) {
-    console.error('❌ Database initialization failed:', error);
+    console.error('❌ Database initialization failed:', error.message);
     console.log('⚠️  Falling back to in-memory storage');
+    dbInitialized = false;
+    db = null;
   }
 };
 
@@ -72,10 +78,19 @@ function authenticateToken(req, res, next) {
   }
 }
 
-// ✅ NEW: Temporary migration endpoint - REMOVE AFTER MIGRATION
+// ✅ FIXED: Migration endpoint with proper error handling
 app.get('/api/migrate', async (req, res) => {
   try {
     console.log('🚀 Starting database migration via HTTP endpoint...');
+    
+    // Ensure database is initialized first
+    if (!dbInitialized) {
+      await initDB();
+    }
+    
+    if (!dbInitialized) {
+      throw new Error('Database connection could not be established');
+    }
     
     await runMigration();
     
@@ -99,10 +114,10 @@ app.get('/api/migrate', async (req, res) => {
   }
 });
 
-// ✅ NEW: Database health check endpoint
+// ✅ FIXED: Database health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
-    if (!dbInitialized) {
+    if (!dbInitialized || !db) {
       return res.json({
         status: 'ok',
         database: 'in-memory',
@@ -110,8 +125,6 @@ app.get('/api/health', async (req, res) => {
       });
     }
 
-    // Import db here to avoid circular dependency issues
-    const { db } = await import('../database_models.js');
     const healthCheck = await db.healthCheck();
     
     res.json({
@@ -558,7 +571,7 @@ app.get('/api/debug/websites', authenticateToken, (req, res) => {
   return res.json({ websites: userWebsites });
 });
 
-// ✅ NEW: Graceful shutdown
+// ✅ FIXED: Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully');
   if (dbInitialized) {
