@@ -1,24 +1,54 @@
 {
-  "name": "sentryprime-backend-v2",
+  "name": "sentryprime-backend",
   "version": "1.0.0",
-  "private": true,
+  "description": "SentryPrime Accessibility Scanner Backend with Alt Text AI",
+  "main": "src/server.js",
   "type": "module",
-  "engines": { 
-    "node": ">=18" 
-  },
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "postinstall": "npx playwright install --with-deps chromium"
+    "migrate": "node database_migration.js",
+    "test": "node --test",
+    "lint": "eslint src/",
+    "format": "prettier --write src/"
   },
   "dependencies": {
-    "axe-core": "^4.8.3",
-    "bcryptjs": "^2.4.3",
+    "express": "^4.18.2",
     "cors": "^2.8.5",
-    "express": "^4.19.2",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "dotenv": "^16.3.1",
+    "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
+    "express-rate-limit": "^6.10.0",
+    "express-validator": "^7.0.1",
     "openai": "^4.52.2",
-    "playwright": "^1.45.0",
-    "uuid": "^9.0.1"
-  }
+    "axe-core": "^4.7.2",
+    "playwright": "^1.36.2",
+    "sharp": "^0.32.5",
+    "node-fetch": "^3.3.2",
+    "ipaddr.js": "^2.1.0",
+    "uuid": "^9.0.0",
+    "pg": "^8.11.3",
+    "crypto": "^1.0.1"
+  },
+  "devDependencies": {
+    "eslint": "^8.45.0",
+    "prettier": "^3.0.0",
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "accessibility",
+    "scanner",
+    "alt-text",
+    "ai",
+    "openai",
+    "axe-core",
+    "wcag"
+  ],
+  "author": "SentryPrime Team",
+  "license": "MIT"
 }
