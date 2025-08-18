@@ -472,5 +472,7 @@ export class DatabaseModels {
   }
 }
 
-// Export singleton instance
-export const db = new DatabaseModels();
+// ✅ FIXED: Create database models factory function instead of singleton
+export const createDatabaseModels = () => {
+  return new DatabaseModels();
+};
