@@ -5,9 +5,20 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuid } from 'uuid';
 import OpenAI from 'openai';
 import { crawlAndScan } from './scanner.js';
-// ✅ FIXED: Import database functions properly
+// ✅ Database and security imports
 import { initializeDatabase, closeDatabase, createDatabaseModels } from '../database_models.js';
 import { runMigration } from '../database_migration.js';
+import { 
+  authenticateToken, 
+  createRateLimit, 
+  authRateLimit, 
+  scanRateLimit,
+  securityHeaders,
+  errorHandler,
+  corsConfig
+} from '../auth_middleware.js';
+// ✅ Alt Text AI routes import
+import altTextAIRoutes, { initializeAltTextAIRoutes } from '../routes/altTextAIRoutes.js';
 
 const app = express();
 
@@ -18,10 +29,10 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
-// ✅ FIX: Proper OpenAI client initialization
+// ✅ OpenAI client initialization
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
-// ✅ FIXED: Database initialization with proper error handling
+// ✅ Database initialization with proper error handling
 let dbInitialized = false;
 let db = null;
 
@@ -32,6 +43,24 @@ const initDB = async () => {
     db = createDatabaseModels();
     dbInitialized = true;
     console.log('✅ Database initialized successfully');
+    
+    // Initialize Alt Text AI routes with database
+    initializeAltTextAIRoutes(db, {
+      openai: {
+        apiKey: OPENAI_API_KEY,
+        model: OPENAI_MODEL
+      },
+      imageProcessing: {
+        maxImageSize: 10 * 1024 * 1024, // 10MB
+        maxDimensions: { width: 2048, height: 2048 }
+      },
+      notifications: {
+        enableInApp: true,
+        enableEmail: false, // Disable for now
+        enableWebhooks: false // Disable for now
+      }
+    });
+    
   } catch (error) {
     console.error('❌ Database initialization failed:', error.message);
     console.log('⚠️  Falling back to in-memory storage');
@@ -43,13 +72,13 @@ const initDB = async () => {
 // Initialize database
 initDB();
 
-// --- Middleware ---
+// --- Security Middleware ---
+app.use(securityHeaders);
 app.use(express.json({ limit: '2mb' }));
-app.use(cors({
-  origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN.split(',').map(s => s.trim()),
-  credentials: false,
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+app.use(cors(corsConfig));
+
+// General rate limiting
+app.use(createRateLimit());
 
 // --- In-memory Data Stores (fallback) ---
 const users = new Map();
@@ -61,29 +90,11 @@ function signToken(userId) {
   return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '24h' });
 }
 
-function authenticateToken(req, res, next) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  
-  if (!token) {
-    return res.status(401).json({ error: 'no_token' });
-  }
-  
-  try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    req.userId = payload.userId;
-    next();
-  } catch (e) {
-    return res.status(401).json({ error: 'invalid_token' });
-  }
-}
-
-// ✅ FIXED: Migration endpoint with proper error handling
+// ✅ Migration endpoint with proper error handling
 app.get('/api/migrate', async (req, res) => {
   try {
     console.log('🚀 Starting database migration via HTTP endpoint...');
     
-    // Ensure database is initialized first
     if (!dbInitialized) {
       await initDB();
     }
@@ -114,7 +125,7 @@ app.get('/api/migrate', async (req, res) => {
   }
 });
 
-// ✅ FIXED: Database health check endpoint
+// ✅ Database health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
     if (!dbInitialized || !db) {
@@ -142,47 +153,108 @@ app.get('/api/health', async (req, res) => {
 });
 
 // --- Authentication Routes ---
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authRateLimit, async (req, res) => {
   const { firstName, lastName, email, password } = req.body || {};
   
   if (!firstName || !lastName || !email || !password) {
     return res.status(400).json({ error: 'missing_fields' });
   }
   
-  const existingUser = [...users.values()].find(u => u.email === email);
-  if (existingUser) {
-    return res.status(409).json({ error: 'email_exists' });
+  try {
+    // Check if user exists in database first
+    if (dbInitialized && db) {
+      const existingUser = await db.getUserByEmail(email);
+      if (existingUser) {
+        return res.status(409).json({ error: 'email_exists' });
+      }
+      
+      // Create user in database
+      const passwordHash = await bcrypt.hash(password, 12);
+      const user = await db.createUser(email, passwordHash);
+      
+      const token = signToken(user.id);
+      return res.status(201).json({ 
+        token, 
+        user: { 
+          id: user.id, 
+          firstName, 
+          lastName, 
+          email: user.email 
+        } 
+      });
+    }
+    
+    // Fallback to in-memory storage
+    const existingUser = [...users.values()].find(u => u.email === email);
+    if (existingUser) {
+      return res.status(409).json({ error: 'email_exists' });
+    }
+    
+    const userId = uuid();
+    const passwordHash = await bcrypt.hash(password, 10);
+    
+    const user = { id: userId, firstName, lastName, email, passwordHash };
+    users.set(userId, user);
+    
+    const token = signToken(userId);
+    return res.status(201).json({ token, user: { id: userId, firstName, lastName, email } });
+    
+  } catch (error) {
+    console.error('Registration error:', error);
+    return res.status(500).json({ error: 'registration_failed' });
   }
-  
-  const userId = uuid();
-  const passwordHash = await bcrypt.hash(password, 10);
-  
-  const user = { id: userId, firstName, lastName, email, passwordHash };
-  users.set(userId, user);
-  
-  const token = signToken(userId);
-  return res.status(201).json({ token, user: { id: userId, firstName, lastName, email } });
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authRateLimit, async (req, res) => {
   const { email, password } = req.body || {};
   
   if (!email || !password) {
     return res.status(400).json({ error: 'missing_credentials' });
   }
   
-  const user = [...users.values()].find(u => u.email === email);
-  if (!user) {
-    return res.status(401).json({ error: 'invalid_credentials' });
+  try {
+    // Check database first
+    if (dbInitialized && db) {
+      const user = await db.getUserByEmail(email);
+      if (!user) {
+        return res.status(401).json({ error: 'invalid_credentials' });
+      }
+      
+      const isValid = await bcrypt.compare(password, user.password_hash);
+      if (!isValid) {
+        return res.status(401).json({ error: 'invalid_credentials' });
+      }
+      
+      const token = signToken(user.id);
+      return res.status(200).json({ 
+        token, 
+        user: { 
+          id: user.id, 
+          firstName: user.firstName || 'User', 
+          lastName: user.lastName || '', 
+          email: user.email 
+        } 
+      });
+    }
+    
+    // Fallback to in-memory storage
+    const user = [...users.values()].find(u => u.email === email);
+    if (!user) {
+      return res.status(401).json({ error: 'invalid_credentials' });
+    }
+    
+    const isValid = await bcrypt.compare(password, user.passwordHash);
+    if (!isValid) {
+      return res.status(401).json({ error: 'invalid_credentials' });
+    }
+    
+    const token = signToken(user.id);
+    return res.status(200).json({ token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email } });
+    
+  } catch (error) {
+    console.error('Login error:', error);
+    return res.status(500).json({ error: 'login_failed' });
   }
-  
-  const isValid = await bcrypt.compare(password, user.passwordHash);
-  if (!isValid) {
-    return res.status(401).json({ error: 'invalid_credentials' });
-  }
-  
-  const token = signToken(user.id);
-  return res.status(200).json({ token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email } });
 });
 
 // --- Dashboard Routes ---
@@ -205,7 +277,6 @@ app.get('/api/dashboard/overview', authenticateToken, (req, res) => {
   });
 });
 
-// ✅ FIX: Updated websites endpoint to return last_scan_id
 app.get('/api/dashboard/websites', authenticateToken, (req, res) => {
   const userWebsites = [...websites.values()].filter(w => w.userId === req.userId);
   
@@ -222,7 +293,6 @@ app.get('/api/dashboard/websites', authenticateToken, (req, res) => {
   return res.json({ websites: websiteList });
 });
 
-// ✅ NEW: Individual website endpoint for startScan
 app.get('/api/dashboard/websites/:websiteId', authenticateToken, (req, res) => {
   const { websiteId } = req.params;
   const website = websites.get(websiteId);
@@ -257,13 +327,13 @@ app.post('/api/dashboard/websites', authenticateToken, (req, res) => {
   return res.status(201).json(website);
 });
 
-// ✅ FIXED: Scan management with proper filtering and sorting
+// --- Scan Routes ---
 app.route('/api/dashboard/scans')
   .get(authenticateToken, (req, res) => {
     const userScans = [...scans.values()]
       .filter(s => s.userId === req.userId)
-      .filter(s => s.status === 'done')  // ← ONLY SHOW COMPLETED SCANS
-      .sort((a, b) => new Date(b.scan_date) - new Date(a.scan_date));  // ← NEWEST FIRST
+      .filter(s => s.status === 'done')
+      .sort((a, b) => new Date(b.scan_date) - new Date(a.scan_date));
     
     const scanSummaries = userScans.map(scan => ({
       id: scan.id,
@@ -281,7 +351,7 @@ app.route('/api/dashboard/scans')
     console.log(`Returning ${scanSummaries.length} completed scans for user ${req.userId}`);
     return res.json({ scans: scanSummaries });
   })
-  .post(authenticateToken, async (req, res) => {
+  .post(authenticateToken, scanRateLimit, async (req, res) => {
     const { website_id, url } = req.body || {};
     
     if (!website_id || !url) {
@@ -296,7 +366,6 @@ app.route('/api/dashboard/scans')
     try {
       console.log(`Starting scan for user ${req.userId}, website ${website_id}: ${url}`);
       
-      // ✅ FIX: Create scan with 'running' status first
       const scanId = uuid();
       const scan = {
         id: scanId,
@@ -315,7 +384,7 @@ app.route('/api/dashboard/scans')
       
       scans.set(scanId, scan);
       
-      // ✅ FIX: Run scan asynchronously with consistent violation counting
+      // Run scan asynchronously
       (async () => {
         try {
           const scanResult = await crawlAndScan(url, { maxPages: 50 });
@@ -336,15 +405,13 @@ app.route('/api/dashboard/scans')
             }))
           }));
           
-          // ✅ FIX: Count total violations consistently
           const totalViolationCount = processedPages.reduce((total, page) => {
             return total + (page.violations ? page.violations.length : 0);
           }, 0);
           
-          // ✅ FIX: Update scan with consistent violation count
           scan.status = 'done';
           scan.scan_date = scanResult.scannedAt || scan.scan_date;
-          scan.total_violations = totalViolationCount;  // ← USE CONSISTENT COUNT
+          scan.total_violations = totalViolationCount;
           scan.compliance_score = scanResult.complianceScore || 0;
           scan.risk_level = scan.compliance_score < 70 ? 'High' : 
                            scan.compliance_score < 90 ? 'Moderate' : 'Low';
@@ -353,12 +420,11 @@ app.route('/api/dashboard/scans')
           
           scans.set(scanId, scan);
           
-          // ✅ CRITICAL: Update website with consistent data
           const websiteToUpdate = websites.get(website_id);
           if (websiteToUpdate) {
             websiteToUpdate.last_scan_id = scanId;
             websiteToUpdate.last_scan_date = scan.scan_date;
-            websiteToUpdate.total_violations = totalViolationCount;  // ← SAME COUNT
+            websiteToUpdate.total_violations = totalViolationCount;
             websiteToUpdate.compliance_score = scan.compliance_score;
             websites.set(website_id, websiteToUpdate);
           }
@@ -383,7 +449,6 @@ app.route('/api/dashboard/scans')
     }
   });
 
-// ✅ NEW: Scan metadata endpoint with real status
 app.get('/api/scans/:scanId', authenticateToken, (req, res) => {
   const { scanId } = req.params;
   const scan = scans.get(scanId);
@@ -405,7 +470,6 @@ app.get('/api/scans/:scanId', authenticateToken, (req, res) => {
   return res.json(scanMeta);
 });
 
-// ✅ FIXED: Scan results endpoint with consistent counting and debugging
 app.get('/api/scans/:scanId/results', authenticateToken, (req, res) => {
   const { scanId } = req.params;
   const scan = scans.get(scanId);
@@ -431,7 +495,6 @@ app.get('/api/scans/:scanId/results', authenticateToken, (req, res) => {
     violations: [],
   };
 
-  // ✅ FIX: Aggregate violations with consistent counting
   if (scan.details && Array.isArray(scan.details.pages)) {
     for (const page of scan.details.pages) {
       const pageUrl = page.url;
@@ -457,15 +520,10 @@ app.get('/api/scans/:scanId/results', authenticateToken, (req, res) => {
 
   console.log(`Scan ${scanId}: stored ${scan.total_violations} violations, returning ${result.violations.length} detailed violations`);
   
-  // ✅ ENSURE COUNTS MATCH
-  if (scan.total_violations !== result.violations.length) {
-    console.warn(`⚠️  Violation count mismatch for scan ${scanId}: stored=${scan.total_violations}, detailed=${result.violations.length}`);
-  }
-  
   return res.json(result);
 });
 
-// ✅ FIXED: AI Analysis endpoint
+// --- AI Analysis Route ---
 app.post('/api/ai/analyze', authenticateToken, async (req, res) => {
   if (!process.env.OPENAI_API_KEY) {
     return res.status(501).json({ 
@@ -498,7 +556,6 @@ app.post('/api/ai/analyze', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'no_scan_data_available' });
     }
 
-    // Build AI prompt
     const prompt = `Analyze this accessibility scan for ${scan.url}:
 
 SUMMARY:
@@ -543,7 +600,10 @@ Keep it concise and actionable for business stakeholders.`;
   }
 });
 
-// ✅ BONUS: Debug endpoints
+// ✅ Alt Text AI Routes
+app.use('/api/alt-text-ai', altTextAIRoutes);
+
+// --- Debug Routes ---
 app.get('/api/debug/scans', authenticateToken, (req, res) => {
   const userScans = [...scans.values()]
     .filter(s => s.userId === req.userId)
@@ -571,7 +631,10 @@ app.get('/api/debug/websites', authenticateToken, (req, res) => {
   return res.json({ websites: userWebsites });
 });
 
-// ✅ FIXED: Graceful shutdown
+// ✅ Error handling middleware
+app.use(errorHandler);
+
+// ✅ Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully');
   if (dbInitialized) {
