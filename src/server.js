@@ -5,6 +5,9 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuid } from 'uuid';
 import OpenAI from 'openai';
 import { crawlAndScan } from './scanner.js';
+// ✅ NEW: Database imports
+import { initializeDatabase, closeDatabase } from '../database_models.js';
+import { runMigration } from '../database_migration.js';
 
 const app = express();
 
@@ -18,6 +21,22 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 // ✅ FIX: Proper OpenAI client initialization
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
+// ✅ NEW: Initialize database on startup
+let dbInitialized = false;
+const initDB = async () => {
+  try {
+    await initializeDatabase();
+    dbInitialized = true;
+    console.log('✅ Database initialized successfully');
+  } catch (error) {
+    console.error('❌ Database initialization failed:', error);
+    console.log('⚠️  Falling back to in-memory storage');
+  }
+};
+
+// Initialize database
+initDB();
+
 // --- Middleware ---
 app.use(express.json({ limit: '2mb' }));
 app.use(cors({
@@ -26,7 +45,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// --- In-memory Data Stores ---
+// --- In-memory Data Stores (fallback) ---
 const users = new Map();
 const websites = new Map();
 const scans = new Map();
@@ -52,6 +71,62 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'invalid_token' });
   }
 }
+
+// ✅ NEW: Temporary migration endpoint - REMOVE AFTER MIGRATION
+app.get('/api/migrate', async (req, res) => {
+  try {
+    console.log('🚀 Starting database migration via HTTP endpoint...');
+    
+    await runMigration();
+    
+    res.json({
+      success: true,
+      message: 'Database migration completed successfully!',
+      timestamp: new Date().toISOString(),
+      tables_created: [
+        'users', 'websites', 'scans', 'alt_text_jobs',
+        'alt_text_suggestions', 'image_cache', 'api_usage', 'user_settings'
+      ]
+    });
+    
+  } catch (error) {
+    console.error('❌ Migration failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// ✅ NEW: Database health check endpoint
+app.get('/api/health', async (req, res) => {
+  try {
+    if (!dbInitialized) {
+      return res.json({
+        status: 'ok',
+        database: 'in-memory',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Import db here to avoid circular dependency issues
+    const { db } = await import('../database_models.js');
+    const healthCheck = await db.healthCheck();
+    
+    res.json({
+      status: 'ok',
+      database: healthCheck,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
 // --- Authentication Routes ---
 app.post('/api/auth/register', async (req, res) => {
@@ -483,8 +558,26 @@ app.get('/api/debug/websites', authenticateToken, (req, res) => {
   return res.json({ websites: userWebsites });
 });
 
+// ✅ NEW: Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  if (dbInitialized) {
+    await closeDatabase();
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, shutting down gracefully');
+  if (dbInitialized) {
+    await closeDatabase();
+  }
+  process.exit(0);
+});
+
 // --- Start Server ---
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`OpenAI integration: ${OPENAI_API_KEY ? 'enabled' : 'disabled'}`);
+  console.log(`Database: ${dbInitialized ? 'PostgreSQL' : 'in-memory fallback'}`);
 });
