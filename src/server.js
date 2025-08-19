@@ -153,7 +153,17 @@ app.post('/api/auth/login', authRateLimit, async (req, res, next) => {
   }
 });
 
-// --- Website Routes (Database Integrated) ---
+// --- Dashboard Routes (Database Integrated & FIXED) ---
+app.get('/api/dashboard/overview', authenticateToken, async (req, res, next) => {
+    try {
+        if (!dbInitialized) throw new Error("Database not available");
+        const overview = await db.getUserDashboardOverview(req.userId);
+        res.json(overview);
+    } catch (error) {
+        next(error);
+    }
+});
+
 app.get('/api/dashboard/websites', authenticateToken, async (req, res, next) => {
   try {
     if (!dbInitialized) throw new Error("Database not available");
@@ -240,7 +250,6 @@ app.get('/api/scans/:scanId/results', authenticateToken, async (req, res, next) 
             return res.status(202).json({ status: scan.status, message: 'Scan not ready' });
         }
         
-        // Reformat results to match frontend expectations
         const scanResults = scan.scan_results || { pages: [] };
         const violations = (scanResults.pages || []).flatMap(page => 
             (page.violations || []).map(v => ({
