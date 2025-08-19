@@ -8,14 +8,13 @@ import { crawlAndScan } from './scanner.js';
 // ✅ Database and security imports
 import { initializeDatabase, closeDatabase, createDatabaseModels } from '../database_models.js';
 import { runMigration } from '../database_migration.js';
-import { 
-  authenticateToken, 
-  createRateLimit, 
-  authRateLimit, 
+import {
+  authenticateToken,
+  createRateLimit,
+  authRateLimit,
   scanRateLimit,
   securityHeaders,
-  errorHandler,
-  corsConfig
+  errorHandler
 } from '../auth_middleware.js';
 // ✅ Alt Text AI routes import
 import altTextAIRoutes, { initializeAltTextAIRoutes } from '../routes/altTextAIRoutes.js';
@@ -25,9 +24,35 @@ const app = express();
 // --- Configuration ---
 const PORT = process.env.PORT || 8080;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
-const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+// ✅ Get the frontend URL from environment variables
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://sentryprime-frontend-v2.vercel.app';
+
+// --- CORS Configuration ---
+// Whitelist of allowed domains
+const allowedOrigins = [
+  FRONTEND_URL,
+  'https://sentryprime-frontend-v2.vercel.app' // Your Vercel URL
+];
+
+const corsOptions = {
+  origin: (origin, callback ) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.error(`CORS error: Origin ${origin} not allowed.`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+};
+
 
 // ✅ OpenAI client initialization
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
@@ -43,7 +68,7 @@ const initDB = async () => {
     db = createDatabaseModels();
     dbInitialized = true;
     console.log('✅ Database initialized successfully');
-    
+
     // Initialize Alt Text AI routes with database
     initializeAltTextAIRoutes(db, {
       openai: {
@@ -60,7 +85,7 @@ const initDB = async () => {
         enableWebhooks: false // Disable for now
       }
     });
-    
+
   } catch (error) {
     console.error('❌ Database initialization failed:', error.message);
     console.log('⚠️  Falling back to in-memory storage');
@@ -75,7 +100,9 @@ initDB();
 // --- Security Middleware ---
 app.use(securityHeaders);
 app.use(express.json({ limit: '2mb' }));
-app.use(cors(corsConfig));
+// ✅ Use the new CORS options
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // Enable pre-flight for all routes
 
 // General rate limiting
 app.use(createRateLimit());
@@ -94,17 +121,17 @@ function signToken(userId) {
 app.get('/api/migrate', async (req, res) => {
   try {
     console.log('🚀 Starting database migration via HTTP endpoint...');
-    
+
     if (!dbInitialized) {
       await initDB();
     }
-    
+
     if (!dbInitialized) {
       throw new Error('Database connection could not be established');
     }
-    
+
     await runMigration();
-    
+
     res.json({
       success: true,
       message: 'Database migration completed successfully!',
@@ -114,7 +141,7 @@ app.get('/api/migrate', async (req, res) => {
         'alt_text_suggestions', 'image_cache', 'api_usage', 'user_settings'
       ]
     });
-    
+
   } catch (error) {
     console.error('❌ Migration failed:', error);
     res.status(500).json({
@@ -137,7 +164,7 @@ app.get('/api/health', async (req, res) => {
     }
 
     const healthCheck = await db.healthCheck();
-    
+
     res.json({
       status: 'ok',
       database: healthCheck,
@@ -155,11 +182,11 @@ app.get('/api/health', async (req, res) => {
 // --- Authentication Routes ---
 app.post('/api/auth/register', authRateLimit, async (req, res) => {
   const { firstName, lastName, email, password } = req.body || {};
-  
+
   if (!firstName || !lastName || !email || !password) {
     return res.status(400).json({ error: 'missing_fields' });
   }
-  
+
   try {
     // Check if user exists in database first
     if (dbInitialized && db) {
@@ -167,38 +194,38 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
       if (existingUser) {
         return res.status(409).json({ error: 'email_exists' });
       }
-      
+
       // Create user in database
       const passwordHash = await bcrypt.hash(password, 12);
       const user = await db.createUser(email, passwordHash);
-      
+
       const token = signToken(user.id);
-      return res.status(201).json({ 
-        token, 
-        user: { 
-          id: user.id, 
-          firstName, 
-          lastName, 
-          email: user.email 
-        } 
+      return res.status(201).json({
+        token,
+        user: {
+          id: user.id,
+          firstName,
+          lastName,
+          email: user.email
+        }
       });
     }
-    
+
     // Fallback to in-memory storage
     const existingUser = [...users.values()].find(u => u.email === email);
     if (existingUser) {
       return res.status(409).json({ error: 'email_exists' });
     }
-    
+
     const userId = uuid();
     const passwordHash = await bcrypt.hash(password, 10);
-    
+
     const user = { id: userId, firstName, lastName, email, passwordHash };
     users.set(userId, user);
-    
+
     const token = signToken(userId);
     return res.status(201).json({ token, user: { id: userId, firstName, lastName, email } });
-    
+
   } catch (error) {
     console.error('Registration error:', error);
     return res.status(500).json({ error: 'registration_failed' });
@@ -207,11 +234,11 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
 
 app.post('/api/auth/login', authRateLimit, async (req, res) => {
   const { email, password } = req.body || {};
-  
+
   if (!email || !password) {
     return res.status(400).json({ error: 'missing_credentials' });
   }
-  
+
   try {
     // Check database first
     if (dbInitialized && db) {
@@ -219,38 +246,38 @@ app.post('/api/auth/login', authRateLimit, async (req, res) => {
       if (!user) {
         return res.status(401).json({ error: 'invalid_credentials' });
       }
-      
+
       const isValid = await bcrypt.compare(password, user.password_hash);
       if (!isValid) {
         return res.status(401).json({ error: 'invalid_credentials' });
       }
-      
+
       const token = signToken(user.id);
-      return res.status(200).json({ 
-        token, 
-        user: { 
-          id: user.id, 
-          firstName: user.firstName || 'User', 
-          lastName: user.lastName || '', 
-          email: user.email 
-        } 
+      return res.status(200).json({
+        token,
+        user: {
+          id: user.id,
+          firstName: user.firstName || 'User',
+          lastName: user.lastName || '',
+          email: user.email
+        }
       });
     }
-    
+
     // Fallback to in-memory storage
     const user = [...users.values()].find(u => u.email === email);
     if (!user) {
       return res.status(401).json({ error: 'invalid_credentials' });
     }
-    
+
     const isValid = await bcrypt.compare(password, user.passwordHash);
     if (!isValid) {
       return res.status(401).json({ error: 'invalid_credentials' });
     }
-    
+
     const token = signToken(user.id);
     return res.status(200).json({ token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email } });
-    
+
   } catch (error) {
     console.error('Login error:', error);
     return res.status(500).json({ error: 'login_failed' });
@@ -261,14 +288,14 @@ app.post('/api/auth/login', authRateLimit, async (req, res) => {
 app.get('/api/dashboard/overview', authenticateToken, (req, res) => {
   const userWebsites = [...websites.values()].filter(w => w.userId === req.userId);
   const userScans = [...scans.values()].filter(s => s.userId === req.userId);
-  
+
   const totalWebsites = userWebsites.length;
   const totalScans = userScans.length;
   const totalViolations = userScans.reduce((sum, scan) => sum + (scan.total_violations || 0), 0);
-  const avgCompliance = userScans.length > 0 
+  const avgCompliance = userScans.length > 0
     ? Math.round(userScans.reduce((sum, scan) => sum + (scan.compliance_score || 0), 0) / userScans.length)
     : 0;
-  
+
   return res.json({
     totalWebsites,
     totalScans,
@@ -279,7 +306,7 @@ app.get('/api/dashboard/overview', authenticateToken, (req, res) => {
 
 app.get('/api/dashboard/websites', authenticateToken, (req, res) => {
   const userWebsites = [...websites.values()].filter(w => w.userId === req.userId);
-  
+
   const websiteList = userWebsites.map(website => ({
     id: website.id,
     name: website.name,
@@ -289,28 +316,28 @@ app.get('/api/dashboard/websites', authenticateToken, (req, res) => {
     compliance_score: website.compliance_score || 0,
     total_violations: website.total_violations || 0
   }));
-  
+
   return res.json({ websites: websiteList });
 });
 
 app.get('/api/dashboard/websites/:websiteId', authenticateToken, (req, res) => {
   const { websiteId } = req.params;
   const website = websites.get(websiteId);
-  
+
   if (!website || website.userId !== req.userId) {
     return res.status(404).json({ error: 'website_not_found' });
   }
-  
+
   return res.json(website);
 });
 
 app.post('/api/dashboard/websites', authenticateToken, (req, res) => {
   const { url, name } = req.body || {};
-  
+
   if (!url) {
     return res.status(400).json({ error: 'url_required' });
   }
-  
+
   const websiteId = uuid();
   const website = {
     id: websiteId,
@@ -322,7 +349,7 @@ app.post('/api/dashboard/websites', authenticateToken, (req, res) => {
     total_violations: 0,
     last_scan_id: null
   };
-  
+
   websites.set(websiteId, website);
   return res.status(201).json(website);
 });
@@ -334,7 +361,7 @@ app.route('/api/dashboard/scans')
       .filter(s => s.userId === req.userId)
       .filter(s => s.status === 'done')
       .sort((a, b) => new Date(b.scan_date) - new Date(a.scan_date));
-    
+
     const scanSummaries = userScans.map(scan => ({
       id: scan.id,
       website_id: scan.website_id,
@@ -347,25 +374,25 @@ app.route('/api/dashboard/scans')
       pages_scanned: scan.pages_scanned,
       status: scan.status
     }));
-    
+
     console.log(`Returning ${scanSummaries.length} completed scans for user ${req.userId}`);
     return res.json({ scans: scanSummaries });
   })
   .post(authenticateToken, scanRateLimit, async (req, res) => {
     const { website_id, url } = req.body || {};
-    
+
     if (!website_id || !url) {
       return res.status(400).json({ error: 'website_id_and_url_required' });
     }
-    
+
     const website = websites.get(website_id);
     if (!website || website.userId !== req.userId) {
       return res.status(404).json({ error: 'website_not_found' });
     }
-    
+
     try {
       console.log(`Starting scan for user ${req.userId}, website ${website_id}: ${url}`);
-      
+
       const scanId = uuid();
       const scan = {
         id: scanId,
@@ -381,14 +408,14 @@ app.route('/api/dashboard/scans')
         pages_scanned: 0,
         details: { pages: [] }
       };
-      
+
       scans.set(scanId, scan);
-      
+
       // Run scan asynchronously
       (async () => {
         try {
           const scanResult = await crawlAndScan(url, { maxPages: 50 });
-          
+
           const processedPages = (scanResult.pages || []).map(page => ({
             url: page.url,
             violations: (page.violations || []).map(violation => ({
@@ -404,22 +431,22 @@ app.route('/api/dashboard/scans')
               }))
             }))
           }));
-          
+
           const totalViolationCount = processedPages.reduce((total, page) => {
             return total + (page.violations ? page.violations.length : 0);
           }, 0);
-          
+
           scan.status = 'done';
           scan.scan_date = scanResult.scannedAt || scan.scan_date;
           scan.total_violations = totalViolationCount;
           scan.compliance_score = scanResult.complianceScore || 0;
-          scan.risk_level = scan.compliance_score < 70 ? 'High' : 
+          scan.risk_level = scan.compliance_score < 70 ? 'High' :
                            scan.compliance_score < 90 ? 'Moderate' : 'Low';
           scan.pages_scanned = scanResult.totalPages || processedPages.length;
           scan.details = { pages: processedPages };
-          
+
           scans.set(scanId, scan);
-          
+
           const websiteToUpdate = websites.get(website_id);
           if (websiteToUpdate) {
             websiteToUpdate.last_scan_id = scanId;
@@ -428,23 +455,23 @@ app.route('/api/dashboard/scans')
             websiteToUpdate.compliance_score = scan.compliance_score;
             websites.set(website_id, websiteToUpdate);
           }
-          
+
           console.log(`Scan completed: ${totalViolationCount} violations, ${scan.compliance_score}% compliance, scan ID: ${scanId}`);
-          
+
         } catch (error) {
           console.error('Scan failed:', error);
           scan.status = 'error';
           scans.set(scanId, scan);
         }
       })();
-      
+
       return res.status(201).json(scan);
-      
+
     } catch (error) {
       console.error('Scan creation failed:', error);
-      return res.status(500).json({ 
-        error: 'scan_failed', 
-        details: error.message 
+      return res.status(500).json({
+        error: 'scan_failed',
+        details: error.message
       });
     }
   });
@@ -452,11 +479,11 @@ app.route('/api/dashboard/scans')
 app.get('/api/scans/:scanId', authenticateToken, (req, res) => {
   const { scanId } = req.params;
   const scan = scans.get(scanId);
-  
+
   if (!scan || scan.userId !== req.userId) {
     return res.status(404).json({ error: 'scan_not_found' });
   }
-  
+
   const scanMeta = {
     id: scan.id,
     website_id: scan.website_id,
@@ -466,7 +493,7 @@ app.get('/api/scans/:scanId', authenticateToken, (req, res) => {
     compliance_score: scan.compliance_score ?? 0,
     status: scan.status || 'running'
   };
-  
+
   return res.json(scanMeta);
 });
 
@@ -479,8 +506,8 @@ app.get('/api/scans/:scanId/results', authenticateToken, (req, res) => {
   }
 
   if (scan.status !== 'done') {
-    return res.status(202).json({ 
-      status: scan.status, 
+    return res.status(202).json({
+      status: scan.status,
       message: 'scan_not_ready',
       details: 'Scan is still processing. Please wait and try again.'
     });
@@ -499,7 +526,7 @@ app.get('/api/scans/:scanId/results', authenticateToken, (req, res) => {
     for (const page of scan.details.pages) {
       const pageUrl = page.url;
       const vios = Array.isArray(page.violations) ? page.violations : [];
-      
+
       for (const v of vios) {
         result.violations.push({
           ruleId: v.id,
@@ -519,16 +546,16 @@ app.get('/api/scans/:scanId/results', authenticateToken, (req, res) => {
   }
 
   console.log(`Scan ${scanId}: stored ${scan.total_violations} violations, returning ${result.violations.length} detailed violations`);
-  
+
   return res.json(result);
 });
 
 // --- AI Analysis Route ---
 app.post('/api/ai/analyze', authenticateToken, async (req, res) => {
   if (!process.env.OPENAI_API_KEY) {
-    return res.status(501).json({ 
-      error: 'ai_disabled', 
-      message: 'OpenAI API key not configured. Set OPENAI_API_KEY environment variable.' 
+    return res.status(501).json({
+      error: 'ai_disabled',
+      message: 'OpenAI API key not configured. Set OPENAI_API_KEY environment variable.'
     });
   }
 
@@ -544,8 +571,8 @@ app.post('/api/ai/analyze', authenticateToken, async (req, res) => {
     }
 
     if (scan.status !== 'done') {
-      return res.status(202).json({ 
-        status: scan.status, 
+      return res.status(202).json({
+        status: scan.status,
         message: 'scan_not_ready',
         details: 'Please wait for the scan to complete before requesting analysis.'
       });
@@ -593,9 +620,9 @@ Keep it concise and actionable for business stakeholders.`;
 
   } catch (e) {
     console.error('AI analyze error:', e);
-    return res.status(500).json({ 
+    return res.status(500).json({
       error: 'ai_analysis_failed',
-      details: e.message 
+      details: e.message
     });
   }
 });
@@ -614,7 +641,7 @@ app.get('/api/debug/scans', authenticateToken, (req, res) => {
       violations: s.total_violations,
       pages: s.details?.pages?.length || 0
     }));
-  
+
   return res.json({ scans: userScans });
 });
 
@@ -627,7 +654,7 @@ app.get('/api/debug/websites', authenticateToken, (req, res) => {
       last_scan_id: w.last_scan_id,
       violations: w.total_violations
     }));
-  
+
   return res.json({ websites: userWebsites });
 });
 
