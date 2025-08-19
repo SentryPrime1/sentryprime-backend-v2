@@ -92,7 +92,6 @@ function signToken(userId) {
 
 // --- Core Routes ---
 
-// ✅ Migration endpoint
 app.get('/api/migrate', async (req, res, next) => {
   try {
     if (!dbInitialized) await initDB();
@@ -104,7 +103,6 @@ app.get('/api/migrate', async (req, res, next) => {
   }
 });
 
-// ✅ Health check endpoint
 app.get('/api/health', async (req, res, next) => {
   try {
     const dbHealth = dbInitialized && db ? await db.healthCheck() : 'disconnected';
@@ -114,7 +112,7 @@ app.get('/api/health', async (req, res, next) => {
   }
 });
 
-// --- Authentication Routes (Database Integrated) ---
+// --- Authentication Routes ---
 app.post('/api/auth/register', authRateLimit, async (req, res, next) => {
   try {
     const { firstName, lastName, email, password } = req.body || {};
@@ -153,7 +151,7 @@ app.post('/api/auth/login', authRateLimit, async (req, res, next) => {
   }
 });
 
-// --- Dashboard Routes (Database Integrated & FIXED) ---
+// --- Dashboard & Website Routes ---
 app.get('/api/dashboard/overview', authenticateToken, async (req, res, next) => {
     try {
         if (!dbInitialized) throw new Error("Database not available");
@@ -180,6 +178,10 @@ app.post('/api/dashboard/websites', authenticateToken, async (req, res, next) =>
     if (!url) return res.status(400).json({ error: 'url_required' });
     if (!dbInitialized) throw new Error("Database not available");
 
+    // ✅ FIXED: Prevent duplicate websites for the same user
+    const existing = await db.getWebsiteByUrlAndUserId(req.userId, url);
+    if (existing) return res.status(409).json({ error: 'website_exists' });
+
     const website = await db.createWebsite(req.userId, url, name || url);
     res.status(201).json(website);
   } catch (error) {
@@ -187,7 +189,7 @@ app.post('/api/dashboard/websites', authenticateToken, async (req, res, next) =>
   }
 });
 
-// --- Scan Routes (Database Integrated) ---
+// --- Scan Routes ---
 app.get('/api/dashboard/scans', authenticateToken, async (req, res, next) => {
     try {
         if (!dbInitialized) throw new Error("Database not available");
@@ -209,7 +211,7 @@ app.post('/api/dashboard/scans', authenticateToken, scanRateLimit, async (req, r
 
     const scan = await db.createScan(req.userId, website_id, url, 'running');
     
-    // Run scan asynchronously
+    // ✅ FIXED: Robust async block
     (async () => {
       try {
         const scanResult = await crawlAndScan(url, { maxPages: 50 });
@@ -272,7 +274,6 @@ app.get('/api/scans/:scanId/results', authenticateToken, async (req, res, next) 
     }
 });
 
-
 // --- AI Routes ---
 app.use('/api/alt-text-ai', altTextAIRoutes);
 
@@ -283,7 +284,6 @@ app.use(errorHandler);
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`OpenAI integration: ${OPENAI_API_KEY ? 'enabled' : 'disabled'}`);
-  console.log(`Database: ${dbInitialized ? 'PostgreSQL' : 'checking...'}`);
 });
 
 const gracefulShutdown = async (signal) => {
