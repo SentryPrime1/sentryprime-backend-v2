@@ -4,10 +4,10 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import OpenAI from 'openai';
 import { crawlAndScan } from './scanner.js';
-// ✅ CORRECTED IMPORTS: Using the new connector pattern
-import { initializeDatabase, closeDatabase } from './database_connector.js';
-import { createDatabaseModels } from './database_models.js';
-import { runMigration } from './database_migration.js';
+// ✅ CORRECTED IMPORTS: Using the correct relative paths
+import { initializeDatabase, closeDatabase } from '../database_connector.js';
+import { createDatabaseModels } from '../database_models.js';
+import { runMigration } from '../database_migration.js';
 import {
   authenticateToken,
   createRateLimit,
@@ -15,8 +15,8 @@ import {
   scanRateLimit,
   securityHeaders,
   errorHandler
-} from './auth_middleware.js';
-import altTextAIRoutes, { initializeAltTextAIRoutes } from './routes/altTextAIRoutes.js';
+} from '../auth_middleware.js';
+import altTextAIRoutes, { initializeAltTextAIRoutes } from '../routes/altTextAIRoutes.js';
 
 const app = express();
 
