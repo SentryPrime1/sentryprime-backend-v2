@@ -4,7 +4,6 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import OpenAI from 'openai';
 import { crawlAndScan } from './scanner.js';
-// ✅ CORRECTED IMPORTS: Using the correct relative paths
 import { initializeDatabase, closeDatabase } from '../database_connector.js';
 import { createDatabaseModels } from '../database_models.js';
 import { runMigration } from '../database_migration.js';
@@ -31,30 +30,30 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'https://sentryprime-frontend-v
 const allowedOrigins = [FRONTEND_URL, 'https://sentryprime-frontend-v2.vercel.app'];
 const corsOptions = {
   origin: (origin, callback ) => {
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) callback(null, true);
+    else callback(new Error('Not allowed by CORS'));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 };
 
-// ✅ OpenAI client initialization
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
-// ✅ Database initialization
+// --- Database Initialization ---
 let db = null;
 
+// ✅ FIXED: Idempotent and robust init function as you recommended
 const initDB = async () => {
+  if (db) {
+    // console.log('📦 Database already initialized, skipping...');
+    return;
+  }
   try {
     console.log('🔄 Initializing database connection...');
-    initializeDatabase(); // This sets up the pool
-    db = createDatabaseModels(); // This gets the pool and creates models
+    initializeDatabase();
+    db = createDatabaseModels();
     console.log('✅ Database initialized successfully');
-
     initializeAltTextAIRoutes(db, {
       openai: { apiKey: OPENAI_API_KEY, model: OPENAI_MODEL },
       imageProcessing: { maxImageSize: 10 * 1024 * 1024, maxDimensions: { width: 2048, height: 2048 } },
@@ -62,10 +61,11 @@ const initDB = async () => {
     });
   } catch (error) {
     console.error('❌ Database initialization failed:', error.message);
-    db = null;
+    db = null; // Ensure db is null on failure
   }
 };
 
+// Initial attempt at startup
 initDB();
 
 // --- Middleware ---
@@ -78,11 +78,18 @@ app.use(createRateLimit());
 // --- Helper Functions ---
 const signToken = (userId) => jwt.sign({ userId }, JWT_SECRET, { expiresIn: '24h' });
 
+// ✅ FIXED: The robust check to be used in every route
+const ensureDbInitialized = async (errorMessage) => {
+  if (!db) {
+    await initDB();
+    if (!db) throw new Error(errorMessage);
+  }
+};
+
 // --- Core Routes ---
 app.get('/api/migrate', async (req, res, next) => {
   try {
-    if (!db) await initDB();
-    if (!db) throw new Error('Database connection could not be established');
+    await ensureDbInitialized('Database connection could not be established for migration');
     await runMigration();
     res.json({ success: true, message: 'Database migration completed successfully!' });
   } catch (error) { next(error); }
@@ -98,9 +105,9 @@ app.get('/api/health', async (req, res, next) => {
 // --- Auth Routes ---
 app.post('/api/auth/register', authRateLimit, async (req, res, next) => {
   try {
+    await ensureDbInitialized("Database not available for registration");
     const { firstName, lastName, email, password } = req.body;
     if (!firstName || !lastName || !email || !password) return res.status(400).json({ error: 'missing_fields' });
-    if (!db) throw new Error("Database not available");
     const existingUser = await db.getUserByEmail(email);
     if (existingUser) return res.status(409).json({ error: 'email_exists' });
     const passwordHash = await bcrypt.hash(password, 12);
@@ -112,9 +119,9 @@ app.post('/api/auth/register', authRateLimit, async (req, res, next) => {
 
 app.post('/api/auth/login', authRateLimit, async (req, res, next) => {
   try {
+    await ensureDbInitialized("Database not available for login");
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'missing_credentials' });
-    if (!db) throw new Error("Database not available");
     const user = await db.getUserByEmail(email);
     if (!user) return res.status(401).json({ error: 'invalid_credentials' });
     const isValid = await bcrypt.compare(password, user.password_hash);
@@ -127,7 +134,7 @@ app.post('/api/auth/login', authRateLimit, async (req, res, next) => {
 // --- Dashboard & Website Routes ---
 app.get('/api/dashboard/overview', authenticateToken, async (req, res, next) => {
   try {
-    if (!db) throw new Error("Database not available");
+    await ensureDbInitialized("Database not available for overview");
     const overview = await db.getUserDashboardOverview(req.userId);
     res.json(overview);
   } catch (error) { next(error); }
@@ -135,7 +142,7 @@ app.get('/api/dashboard/overview', authenticateToken, async (req, res, next) => 
 
 app.get('/api/dashboard/websites', authenticateToken, async (req, res, next) => {
   try {
-    if (!db) throw new Error("Database not available");
+    await ensureDbInitialized("Database not available for websites");
     const websites = await db.getWebsitesByUserId(req.userId);
     res.json({ websites });
   } catch (error) { next(error); }
@@ -143,9 +150,9 @@ app.get('/api/dashboard/websites', authenticateToken, async (req, res, next) => 
 
 app.post('/api/dashboard/websites', authenticateToken, async (req, res, next) => {
   try {
+    await ensureDbInitialized("Database not available for creating website");
     const { url, name } = req.body;
     if (!url) return res.status(400).json({ error: 'url_required' });
-    if (!db) throw new Error("Database not available");
     const existing = await db.getWebsiteByUrlAndUserId(req.userId, url);
     if (existing) return res.status(409).json({ error: 'website_exists' });
     const website = await db.createWebsite(req.userId, url, name || url);
@@ -156,7 +163,7 @@ app.post('/api/dashboard/websites', authenticateToken, async (req, res, next) =>
 // --- Scan Routes ---
 app.get('/api/dashboard/scans', authenticateToken, async (req, res, next) => {
   try {
-    if (!db) throw new Error("Database not available");
+    await ensureDbInitialized("Database not available for scans");
     const scans = await db.getScansByUserId(req.userId);
     res.json({ scans });
   } catch (error) { next(error); }
@@ -164,9 +171,9 @@ app.get('/api/dashboard/scans', authenticateToken, async (req, res, next) => {
 
 app.post('/api/dashboard/scans', authenticateToken, scanRateLimit, async (req, res, next) => {
   try {
+    await ensureDbInitialized("Database not available for starting scan");
     const { website_id, url } = req.body;
     if (!website_id || !url) return res.status(400).json({ error: 'website_id_and_url_required' });
-    if (!db) throw new Error("Database not available");
     const website = await db.getWebsiteById(website_id);
     if (!website || website.user_id !== req.userId) return res.status(404).json({ error: 'website_not_found' });
     const scan = await db.createScan(req.userId, website_id, url, 'running');
@@ -186,8 +193,8 @@ app.post('/api/dashboard/scans', authenticateToken, scanRateLimit, async (req, r
 
 app.get('/api/scans/:scanId/results', authenticateToken, async (req, res, next) => {
   try {
+    await ensureDbInitialized("Database not available for scan results");
     const { scanId } = req.params;
-    if (!db) throw new Error("Database not available");
     const scan = await db.getScanById(scanId);
     if (!scan || scan.user_id !== req.userId) return res.status(404).json({ error: 'scan_not_found' });
     if (scan.status !== 'done') return res.status(202).json({ status: scan.status, message: 'Scan not ready' });
