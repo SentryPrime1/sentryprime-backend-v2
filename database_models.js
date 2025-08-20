@@ -1,4 +1,4 @@
-import { getPool } from './database_migration.js';
+import { getPool } from './database_connector.js';
 
 // --- DatabaseModels Class ---
 // Encapsulates all database interactions for the application.
@@ -6,7 +6,8 @@ class DatabaseModels {
   constructor() {
     this.pool = getPool();
     if (!this.pool) {
-      throw new Error('Database pool not initialized. Call initializeDatabase() from database_migration.js first.');
+      // This check is a safeguard, as getPool() now initializes if needed.
+      throw new Error('Database pool could not be initialized.');
     }
   }
 
@@ -58,7 +59,6 @@ class DatabaseModels {
     return rows[0];
   }
 
-  // ✅ FIXED: Function to prevent duplicate websites
   async getWebsiteByUrlAndUserId(userId, url) {
     const { rows } = await this.pool.query('SELECT * FROM websites WHERE user_id = $1 AND url = $2', [userId, url]);
     return rows[0];
@@ -110,7 +110,6 @@ class DatabaseModels {
     return rows;
   }
 
-  // ✅ FIXED: The missing dashboard overview function
   async getUserDashboardOverview(userId) {
     const query = `
       SELECT
