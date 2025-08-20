@@ -43,12 +43,8 @@ const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 // --- Database Initialization ---
 let db = null;
 
-// ✅ FIXED: Idempotent and robust init function as you recommended
 const initDB = async () => {
-  if (db) {
-    // console.log('📦 Database already initialized, skipping...');
-    return;
-  }
+  if (db) return;
   try {
     console.log('🔄 Initializing database connection...');
     initializeDatabase();
@@ -61,11 +57,10 @@ const initDB = async () => {
     });
   } catch (error) {
     console.error('❌ Database initialization failed:', error.message);
-    db = null; // Ensure db is null on failure
+    db = null;
   }
 };
 
-// Initial attempt at startup
 initDB();
 
 // --- Middleware ---
@@ -77,8 +72,6 @@ app.use(createRateLimit());
 
 // --- Helper Functions ---
 const signToken = (userId) => jwt.sign({ userId }, JWT_SECRET, { expiresIn: '24h' });
-
-// ✅ FIXED: The robust check to be used in every route
 const ensureDbInitialized = async (errorMessage) => {
   if (!db) {
     await initDB();
@@ -169,17 +162,19 @@ app.get('/api/dashboard/scans', authenticateToken, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.post('/api/dashboard/scans', authenticateToken, scanRateLimit, async (req, res, next) => {
+// ✅ FIXED: Changed the route to be more specific and RESTful
+app.post('/api/websites/:websiteId/scans', authenticateToken, scanRateLimit, async (req, res, next) => {
   try {
     await ensureDbInitialized("Database not available for starting scan");
-    const { website_id, url } = req.body;
-    if (!website_id || !url) return res.status(400).json({ error: 'website_id_and_url_required' });
-    const website = await db.getWebsiteById(website_id);
+    const { websiteId } = req.params;
+    const website = await db.getWebsiteById(websiteId);
     if (!website || website.user_id !== req.userId) return res.status(404).json({ error: 'website_not_found' });
-    const scan = await db.createScan(req.userId, website_id, url, 'running');
+    
+    const scan = await db.createScan(req.userId, websiteId, website.url, 'running');
+    
     (async () => {
       try {
-        const scanResult = await crawlAndScan(url, { maxPages: 50 });
+        const scanResult = await crawlAndScan(website.url, { maxPages: 50 });
         const updatePayload = { status: 'done', scanned_at: scanResult.scannedAt, total_violations: scanResult.totalViolations, compliance_score: scanResult.complianceScore, pages_scanned: scanResult.totalPages, scan_results: { pages: scanResult.pages } };
         await db.updateScan(scan.id, updatePayload);
       } catch (error) {
@@ -187,6 +182,7 @@ app.post('/api/dashboard/scans', authenticateToken, scanRateLimit, async (req, r
         await db.updateScan(scan.id, { status: 'error', scan_results: { error: error.message } });
       }
     })();
+    
     res.status(201).json(scan);
   } catch (error) { next(error); }
 });
