@@ -1,113 +1,65 @@
 // Database Migration Script for Alt Text AI
 // Run this script to set up all required tables and indexes
 
-import { initializeDatabase, closeDatabase } from './database_models.js';
-import fs from 'fs';
+import { getPool, initializeDatabase, closeDatabase } from './database_connector.js';
+import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-async function runMigration() {
-  let pool = null;
+// Main migration function
+export async function runMigration() {
+  console.log('🚀 Starting database migration...');
   
+  // Ensure the database is initialized before proceeding
+  initializeDatabase();
+  const pool = getPool();
+  const client = await pool.connect();
+  
+  console.log('📋 Executing database schema...');
+
   try {
-    console.log('🚀 Starting database migration...');
+    // Resolve path from the root of the project
+    const schemaPath = path.resolve(process.cwd(), 'database_schema.sql');
+    const schemaSql = await fs.readFile(schemaPath, 'utf-8');
     
-    // Initialize database connection
-    pool = await initializeDatabase();
+    // The schema file should be transactional, so we wrap it in BEGIN/COMMIT
+    await client.query('BEGIN');
+    await client.query(schemaSql);
+    await client.query('COMMIT');
     
-    // Read the SQL schema file
-    const schemaPath = path.join(__dirname, 'database_schema.sql');
-    const schemaSql = fs.readFileSync(schemaPath, 'utf8');
+    console.log('✅ Database migration completed successfully.');
     
-    console.log('📋 Executing database schema...');
+    // Optional: Verify tables were created
+    const verificationResult = await client.query(`
+      SELECT table_name FROM information_schema.tables 
+      WHERE table_schema = 'public' AND table_name IN 
+      ('users', 'websites', 'scans', 'alt_text_jobs', 'alt_text_suggestions', 'image_cache', 'api_usage', 'user_settings');
+    `);
     
-    // Split SQL into individual statements and execute them
-    const statements = schemaSql
-      .split(';')
-      .map(stmt => stmt.trim())
-      .filter(stmt => stmt.length > 0);
-    
-    for (let i = 0; i < statements.length; i++) {
-      const statement = statements[i];
-      
-      try {
-        await pool.query(statement);
-        
-        // Log progress for major operations
-        if (statement.includes('CREATE TABLE')) {
-          const tableName = statement.match(/CREATE TABLE (?:IF NOT EXISTS )?(\w+)/i)?.[1];
-          console.log(`✅ Created table: ${tableName}`);
-        } else if (statement.includes('CREATE INDEX')) {
-          const indexName = statement.match(/CREATE INDEX (?:IF NOT EXISTS )?(\w+)/i)?.[1];
-          console.log(`📊 Created index: ${indexName}`);
-        } else if (statement.includes('CREATE TRIGGER')) {
-          const triggerName = statement.match(/CREATE TRIGGER (\w+)/i)?.[1];
-          console.log(`⚡ Created trigger: ${triggerName}`);
-        } else if (statement.includes('CREATE OR REPLACE FUNCTION')) {
-          const functionName = statement.match(/CREATE OR REPLACE FUNCTION (\w+)/i)?.[1];
-          console.log(`🔧 Created function: ${functionName}`);
-        }
-        
-      } catch (error) {
-        // Log error but continue with other statements
-        console.error(`❌ Error executing statement ${i + 1}:`, error.message);
-        console.error(`Statement: ${statement.substring(0, 100)}...`);
-      }
-    }
-    
-    console.log('🎯 Migration completed successfully!');
-    
-    // Verify tables were created
-    const tablesQuery = `
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = 'public' 
-      ORDER BY table_name
-    `;
-    
-    const result = await pool.query(tablesQuery);
-    const tables = result.rows.map(row => row.table_name);
-    
-    console.log('\n📋 Created tables:');
-    tables.forEach(table => {
-      console.log(`  ✅ ${table}`);
-    });
-    
-    // Verify indexes were created
-    const indexesQuery = `
-      SELECT indexname 
-      FROM pg_indexes 
-      WHERE schemaname = 'public' 
-      AND indexname LIKE 'idx_%'
-      ORDER BY indexname
-    `;
-    
-    const indexResult = await pool.query(indexesQuery);
-    const indexes = indexResult.rows.map(row => row.indexname);
-    
-    console.log('\n📊 Created indexes:');
-    indexes.forEach(index => {
-      console.log(`  ✅ ${index}`);
-    });
-    
-    console.log('\n🎉 Database is ready for Alt Text AI!');
-    
+    console.log(`✅ Verified ${verificationResult.rowCount} tables created.`);
+
   } catch (error) {
-    console.error('💥 Migration failed:', error);
-    process.exit(1);
+    // If any part of the migration fails, roll back the entire transaction
+    await client.query('ROLLBACK');
+    console.error('❌ Migration failed, transaction rolled back:', error);
+    throw error; // Re-throw the error to indicate failure
   } finally {
-    if (pool) {
-      await closeDatabase();
-    }
+    // Always release the client back to the pool
+    client.release();
   }
 }
 
-// Run migration if this file is executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runMigration();
-}
+// This allows running the script directly from the command line, e.g., `node database_migration.js`
+// It checks if the script is the main module being run.
+const isDirectRun = import.meta.url.endsWith(process.argv[1]);
 
-export { runMigration };
+if (isDirectRun) {
+  (async () => {
+    try {
+      await runMigration();
+    } catch (e) {
+      console.error("💥 Standalone migration run failed.");
+    } finally {
+      await closeDatabase();
+    }
+  })();
+}
