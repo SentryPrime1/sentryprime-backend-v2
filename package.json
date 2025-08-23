@@ -5,12 +5,13 @@
   "main": "src/server.js",
   "type": "module",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "npx playwright install --with-deps chromium && node src/server.js",
     "dev": "node --watch src/server.js",
     "migrate": "node database_migration.js",
     "test": "node --test",
     "lint": "eslint src/",
-    "format": "prettier --write src/"
+    "format": "prettier --write src/",
+    "postinstall": "npx playwright install --with-deps chromium"
   },
   "dependencies": {
     "express": "^4.18.2",
