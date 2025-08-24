@@ -566,6 +566,23 @@ app.post('/api/dashboard/websites', authenticateToken, async (req, res) => {
 
 // ===== SCANNING ROUTES =====
 
+// Get all scans for the logged-in user
+app.get('/api/dashboard/scans', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    
+    const result = await pool.query(
+      'SELECT * FROM scans WHERE user_id = $1 ORDER BY scan_date DESC',
+      [userId]
+    );
+
+    res.json({ scans: result.rows });
+  } catch (error) {
+    console.error('❌ Error getting scans:', error.message);
+    res.status(500).json({ error: 'Failed to retrieve scans' });
+  }
+});
+
 // Start scan
 app.post('/api/dashboard/scans', authenticateToken, async (req, res) => {
   try {
