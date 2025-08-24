@@ -441,7 +441,7 @@ app.post('/api/dashboard/scans', authenticateToken, async (req, res) => {
         // Update scan with results
         await pool.query(`
           UPDATE scans 
-          SET status = $1, completion_date = CURRENT_TIMESTAMP, 
+SET status = $1, updated_at = CURRENT_TIMESTAMP, 
               total_violations = $2, compliance_score = $3, 
               pages_scanned = $4, results = $5
           WHERE id = $6
