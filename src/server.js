@@ -590,6 +590,8 @@ app.post('/api/dashboard/scans', authenticateToken, async (req, res) => {
           JSON.stringify(results),
           scan.id
         ]);
+
+        console.log(`✅ Stored scan results for ${url} (ID: ${scan.id})`);
       } catch (error) {
         console.error(`❌ Scan failed for ${url}:`, error);
         await pool.query('UPDATE scans SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', ['failed', scan.id]);
@@ -652,12 +654,15 @@ app.get('/api/scans/:scanId', authenticateToken, async (req, res) => {
   }
 });
 
-// Scan results endpoint
+// ✅ CRITICAL FIX: Missing scan results endpoint that frontend needs
 app.get('/api/scans/:scanId/results', authenticateToken, async (req, res) => {
   try {
     const { scanId } = req.params;
     const userId = req.user.userId;
 
+    console.log(`📊 Fetching results for scan ${scanId} (user ${userId})`);
+
+    // Get scan with results
     const result = await pool.query(`
       SELECT s.*, w.name as website_name
       FROM scans s
@@ -666,14 +671,32 @@ app.get('/api/scans/:scanId/results', authenticateToken, async (req, res) => {
     `, [scanId, userId]);
 
     if (result.rows.length === 0) {
+      console.log(`❌ Scan ${scanId} not found for user ${userId}`);
       return res.status(404).json({ error: 'scan_not_found', message: 'Scan not found or access denied' });
     }
 
     const scan = result.rows[0];
 
     if (scan.status !== 'completed') {
+      console.log(`⏳ Scan ${scanId} not completed yet (status: ${scan.status})`);
       return res.status(400).json({ error: 'scan_not_complete', message: 'Scan is not yet completed' });
     }
+
+    if (!scan.results) {
+      console.log(`❌ No results stored for scan ${scanId}`);
+      return res.status(404).json({ error: 'no_results', message: 'Scan results not available' });
+    }
+
+    // Parse results if they're stored as string
+    let parsedResults;
+    try {
+      parsedResults = typeof scan.results === 'string' ? JSON.parse(scan.results) : scan.results;
+    } catch (parseError) {
+      console.error(`❌ Failed to parse results for scan ${scanId}:`, parseError);
+      return res.status(500).json({ error: 'invalid_results', message: 'Scan results are corrupted' });
+    }
+
+    console.log(`✅ Successfully retrieved results for scan ${scanId}`);
 
     res.json({
       scanId: scan.id,
@@ -681,10 +704,13 @@ app.get('/api/scans/:scanId/results', authenticateToken, async (req, res) => {
       url: scan.url,
       scanDate: scan.scan_date,
       completionDate: scan.completion_date,
-      results: scan.results || {}
+      totalViolations: scan.total_violations,
+      complianceScore: scan.compliance_score,
+      pagesScanned: scan.pages_scanned,
+      results: parsedResults
     });
   } catch (error) {
-    console.error('Get scan results error:', error);
+    console.error(`❌ Error fetching scan results for ${scanId}:`, error);
     res.status(500).json({ error: 'database_error', message: 'Failed to retrieve scan results' });
   }
 });
