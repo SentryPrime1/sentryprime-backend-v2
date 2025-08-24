@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';  // ✅ Changed from 'bcrypt' to 'bcryptjs'
 import pkg from 'pg';
 import { createRequire } from 'module';
 import axios from 'axios';
@@ -1141,4 +1141,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🤖 Alt Text AI: Enabled with GPT-4o Vision`);
   console.log(`🔍 Image Scraping: Enhanced with cheerio`);
   console.log(`🧠 AI Analysis: Comprehensive accessibility insights`);
+  console.log(`🔐 Using bcryptjs for cross-platform compatibility`);
 });
