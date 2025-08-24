@@ -162,23 +162,34 @@ app.get('/api/dashboard/scans', authenticateToken, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-// ✅ FIXED: Changed the route to be more specific and RESTful
-app.post('/api/websites/:websiteId/scans', authenticateToken, scanRateLimit, async (req, res, next) => {
+// ✅ FIXED: Changed to match frontend expectations
+app.post('/api/dashboard/scans', authenticateToken, scanRateLimit, async (req, res, next) => {
   try {
     await ensureDbInitialized("Database not available for starting scan");
-    const { websiteId } = req.params;
-    const website = await db.getWebsiteById(websiteId);
+    const { website_id, url } = req.body;
+    if (!website_id || !url) return res.status(400).json({ error: 'website_id_and_url_required' });
+    
+    const website = await db.getWebsiteById(website_id);
     if (!website || website.user_id !== req.userId) return res.status(404).json({ error: 'website_not_found' });
     
-    const scan = await db.createScan(req.userId, websiteId, website.url, 'running');
+    const scan = await db.createScan(req.userId, website_id, url, 'running');
     
+    // Run scan asynchronously
     (async () => {
       try {
-        const scanResult = await crawlAndScan(website.url, { maxPages: 50 });
-        const updatePayload = { status: 'done', scanned_at: scanResult.scannedAt, total_violations: scanResult.totalViolations, compliance_score: scanResult.complianceScore, pages_scanned: scanResult.totalPages, scan_results: { pages: scanResult.pages } };
+        const scanResult = await crawlAndScan(url, { maxPages: 50 });
+        const updatePayload = { 
+          status: 'done', 
+          scanned_at: scanResult.scannedAt, 
+          total_violations: scanResult.totalViolations, 
+          compliance_score: scanResult.complianceScore, 
+          pages_scanned: scanResult.totalPages, 
+          scan_results: { pages: scanResult.pages } 
+        };
         await db.updateScan(scan.id, updatePayload);
+        console.log(`✅ Scan completed for website ${website_id}: ${scanResult.totalViolations} violations found`);
       } catch (error) {
-        console.error('Async scan processing failed:', error);
+        console.error('❌ Async scan processing failed:', error);
         await db.updateScan(scan.id, { status: 'error', scan_results: { error: error.message } });
       }
     })();
@@ -194,9 +205,20 @@ app.get('/api/scans/:scanId/results', authenticateToken, async (req, res, next) 
     const scan = await db.getScanById(scanId);
     if (!scan || scan.user_id !== req.userId) return res.status(404).json({ error: 'scan_not_found' });
     if (scan.status !== 'done') return res.status(202).json({ status: scan.status, message: 'Scan not ready' });
+    
     const scanResults = scan.scan_results || { pages: [] };
-    const violations = (scanResults.pages || []).flatMap(page => (page.violations || []).map(v => ({ ...v, pageUrl: page.url })));
-    res.json({ id: scan.id, url: scan.url, scan_date: scan.scanned_at, total_violations: scan.total_violations, compliance_score: scan.compliance_score, violations: violations });
+    const violations = (scanResults.pages || []).flatMap(page => 
+      (page.violations || []).map(v => ({ ...v, pageUrl: page.url }))
+    );
+    
+    res.json({ 
+      id: scan.id, 
+      url: scan.url, 
+      scan_date: scan.scanned_at, 
+      total_violations: scan.total_violations, 
+      compliance_score: scan.compliance_score, 
+      violations: violations 
+    });
   } catch (error) { next(error); }
 });
 
@@ -209,6 +231,8 @@ app.use(errorHandler);
 // --- Server Lifecycle ---
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`OpenAI integration: ${OPENAI_API_KEY ? 'enabled' : 'disabled'}`);
+  console.log(`Database: ${db ? 'connected' : 'checking...'}`);
 });
 
 const gracefulShutdown = async (signal) => {
