@@ -10,8 +10,7 @@
     "migrate": "node database_migration.js",
     "test": "node --test",
     "lint": "eslint src/",
-    "format": "prettier --write src/",
-    "build": "npx playwright install --with-deps chromium"
+    "format": "prettier --write src/"
   },
   "dependencies": {
     "express": "^4.18.2",
@@ -25,7 +24,6 @@
     "express-validator": "^7.0.1",
     "openai": "^4.52.2",
     "axe-core": "^4.7.2",
-    "playwright": "^1.36.2",
     "sharp": "^0.32.5",
     "node-fetch": "^3.3.2",
     "ipaddr.js": "^2.1.0",
