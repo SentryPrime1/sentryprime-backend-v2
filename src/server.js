@@ -162,7 +162,6 @@ app.get('/api/dashboard/scans', authenticateToken, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-// ✅ FIXED: Changed to match frontend expectations
 app.post('/api/dashboard/scans', authenticateToken, scanRateLimit, async (req, res, next) => {
   try {
     await ensureDbInitialized("Database not available for starting scan");
@@ -195,6 +194,28 @@ app.post('/api/dashboard/scans', authenticateToken, scanRateLimit, async (req, r
     })();
     
     res.status(201).json(scan);
+  } catch (error) { next(error); }
+});
+
+// ✅ ADDED: Missing scan metadata route that frontend expects
+app.get('/api/scans/:scanId', authenticateToken, async (req, res, next) => {
+  try {
+    await ensureDbInitialized("Database not available for scan metadata");
+    const { scanId } = req.params;
+    const scan = await db.getScanById(scanId);
+    if (!scan || scan.user_id !== req.userId) return res.status(404).json({ error: 'scan_not_found' });
+    
+    // Return scan metadata (status, basic info) - not full results
+    res.json({
+      id: scan.id,
+      website_id: scan.website_id,
+      url: scan.url,
+      status: scan.status,
+      scan_date: scan.scanned_at,
+      total_violations: scan.total_violations,
+      compliance_score: scan.compliance_score,
+      pages_scanned: scan.pages_scanned
+    });
   } catch (error) { next(error); }
 });
 
