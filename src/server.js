@@ -362,6 +362,58 @@ app.get('/api/fix-schema', async (req, res) => {
     });
   }
 });
+});
+
+// Force fix alt_text_jobs table
+app.get('/api/fix-alt-text-table', async (req, res) => {
+  try {
+    console.log('🔧 Force fixing alt_text_jobs table...');
+    
+    // Drop and recreate with correct schema
+    await pool.query('DROP TABLE IF EXISTS alt_text_jobs CASCADE');
+    console.log('📦 Dropped alt_text_jobs table');
+    
+    await pool.query(`
+      CREATE TABLE alt_text_jobs (
+        id SERIAL PRIMARY KEY,
+        scan_id INTEGER REFERENCES scans(id) ON DELETE CASCADE,
+        user_id INTEGER,
+        status VARCHAR(50) DEFAULT 'pending',
+        total_images INTEGER DEFAULT 0,
+        processed_images INTEGER DEFAULT 0,
+        estimated_cost DECIMAL(10,2) DEFAULT 0.00,
+        actual_cost DECIMAL(10,2) DEFAULT 0.00,
+        results JSONB,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP,
+        error_message TEXT
+      )
+    `);
+    console.log('✅ Created alt_text_jobs table with correct schema');
+    
+    // Add indexes
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_alt_text_jobs_scan_id ON alt_text_jobs(scan_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_alt_text_jobs_status ON alt_text_jobs(status)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_alt_text_jobs_user_id ON alt_text_jobs(user_id)');
+    console.log('✅ Added indexes');
+    
+    res.json({
+      success: true,
+      message: '✅ alt_text_jobs table fixed successfully!',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Alt text table fix error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Database migration
+app.get('/api/migrate', async (req, res) => {
 
 // Database migration
 app.get('/api/migrate', async (req, res) => {
